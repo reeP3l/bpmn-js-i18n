@@ -1,6 +1,4 @@
-import fs from 'fs';
-
-import fetch from 'node-fetch';
+import fs from 'node:fs';
 
 const translationPaths = fs.readdirSync('translations');
 
@@ -11,9 +9,14 @@ async function run() {
 
   const errors = [];
 
-  console.log('Fetching translation keys');
+  console.log('INFO: Fetching translation keys');
 
   const translationsKeys = await fetch(translationsUrl).then(response => response.text());
+
+  const results = {
+    keys: translationsKeys,
+    translations: {}
+  };
 
   const translationsEnglish = JSON.parse(translationsKeys).reduce((translationsEnglish, key) => {
     return {
@@ -26,12 +29,12 @@ async function run() {
     writeTranslation('en.js', translationsEnglish);
   }
 
-  console.log('Verifying translations');
+  console.log('INFO: Verifying translations');
 
   for (const translationPath of translationPaths) {
     const name = translationPath.split('.')[ 0 ].toUpperCase();
 
-    console.log(`Verifying ${ name } translations`);
+    console.log(`INFO: Verifying ${ name } translations`);
 
     try {
       const { default: translations } = await import(`../translations/${translationPath}`);
@@ -50,41 +53,43 @@ async function run() {
       }
 
       const stats = {
-        ok: 0,
+        ok: [],
         missing: [],
         unknown: []
       };
 
       for (const key in translationsEnglish) {
         if (key in translationsOrdered) {
-          stats.ok++;
+          stats.ok.push(key);
         } else {
           stats.missing.push(key);
-
-          process.env.VERBOSE && console.log(`Missing translation <${ key }>`);
         }
       }
 
       for (const key in translationsOrdered) {
         if (!(key in translationsEnglish)) {
           stats.unknown.push(key);
-
-          process.env.VERBOSE && console.log(`Unknown translation <${ key }>`);
         }
       }
 
-      if (stats.missing) {
-        console.warn(`WARN: ${ name} has ${stats.missing.length} missing translations: ${stats.missing}`);
+      if (stats.missing.length) {
+        console.warn('WARN: %s has %s missing translations: %o', name, stats.missing.length, stats.missing);
       }
 
-      if (stats.unknown) {
-        console.warn(`WARN: ${ name } has ${stats.unknown.length} unknown translations`);
+      if (stats.unknown.length) {
+        console.warn('WARN: %s has %s unknown translations: %o', name, stats.unknown.length, stats.unknown);
       }
+
+      results.translations[name] = stats;
     } catch (error) {
       console.error(`ERR: <${ name }> could not be validated`, error);
 
       errors.push(error);
     }
+  }
+
+  if (!errors.length) {
+    writeResults(results);
   }
 
   return errors;
@@ -100,4 +105,38 @@ run().then(errors => {
 
 function writeTranslation(file, messages) {
   fs.writeFileSync(`translations/${file}`, `export default ${JSON.stringify(messages, null, 2)};`, 'utf8');
+}
+
+function writeResults(results) {
+
+  const status = (stats) => {
+    return [
+      [ 0, '🟢' ],
+      [ 10, '🟡' ],
+      [ results.keys.length, '🔴' ]
+    ].find(e => e[0] >= stats.missing.length)[1];
+  };
+
+  const body = Object.entries(results.translations).map(([ name, stats ]) => {
+    const language = name.toLowerCase();
+
+    return `|[${language}](../translations/${language}.js)|${status(stats)}|${stats.missing.length}|${stats.unknown.length}|`;
+  }).join('\n');
+
+
+  const markdown = `# Translation Coverage
+
+A coverage report for existing translations, updated regularily against the latest [bpmn-js release](https://github.com/bpmn-io/bpmn-js).
+
+| Language | Status | Missing keys | Unknown keys |
+| :--- | :---: | ---: | ---: |
+${body}
+
+_Missing keys_ indicate entries without translation, _unknown keys_ refer to entries that are no longer valid.
+`;
+
+  fs.mkdirSync('docs', { recursive: true});
+
+  fs.writeFileSync(`docs/COVERAGE.md`, markdown, 'utf8');
+  fs.writeFileSync(`docs/coverage.json`, JSON.stringify(results, 0, 2), 'utf8');
 }
